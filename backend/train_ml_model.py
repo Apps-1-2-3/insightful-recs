@@ -1,14 +1,4 @@
 """
-ML Model Training Script for Drug Recommendation System
-
-This script trains a Logistic Regression classifier to predict recommended drugs
-based on patient features. The model serves as a SUPPLEMENTARY AI layer to the
-existing similarity-based recommendation engine.
-
-LEARNING: The model learns patterns from historical EHR data to predict drugs.
-EVALUATION: Uses accuracy on a 20% held-out validation split.
-ROLE: Complements (does not replace) similarity-based reasoning.
-
 Usage:
     cd backend
     python train_ml_model.py
