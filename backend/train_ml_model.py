@@ -1,4 +1,14 @@
 """
+ML Model Training Script for Drug Recommendation System
+
+This script trains a Logistic Regression classifier to predict recommended drugs
+based on patient features. The model serves as a SUPPLEMENTARY AI layer to the
+existing similarity-based recommendation engine.
+
+LEARNING: The model learns patterns from historical EHR data to predict drugs.
+EVALUATION: Uses accuracy on a 20% held-out validation split.
+ROLE: Complements (does not replace) similarity-based reasoning.
+
 Usage:
     cd backend
     python train_ml_model.py
@@ -18,7 +28,7 @@ MODEL_PATH = "ml_model.pkl"
 ENCODERS_PATH = "ml_encoders.pkl"
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
-
+TARGET_COL = "Medication"
 
 def parse_list_field(value: str) -> str:
     """Convert list fields to a normalized string for encoding."""
@@ -29,67 +39,33 @@ def parse_list_field(value: str) -> str:
 
 
 def prepare_features(df: pd.DataFrame, encoders: dict = None, fit: bool = True) -> tuple:
-    """
-    Prepare features for ML model.
-    
-    Args:
-        df: DataFrame with patient data
-        encoders: Dictionary of LabelEncoders (None if fitting new)
-        fit: Whether to fit encoders (True for training, False for inference)
-    
-    Returns:
-        X: Feature matrix
-        encoders: Dictionary of fitted encoders
-    """
     if encoders is None:
         encoders = {}
-    
-    # Select features for ML model
-    feature_cols = ["age", "gender", "heart_rate", "blood_type", "symptoms", "medical_history", "allergies"]
-    
-    # Create a copy for processing
+
     X = pd.DataFrame()
-    
-    # Numeric features (normalize)
-    if "age" in df.columns:
-        X["age"] = df["age"].fillna(45).astype(float) / 100.0  # Normalize to 0-1 range
-    
-    if "heart_rate" in df.columns:
-        X["heart_rate"] = df["heart_rate"].fillna(72).astype(float) / 200.0  # Normalize
-    
-    # Categorical features (label encode)
-    categorical_cols = ["gender", "blood_type"]
-    for col in categorical_cols:
-        if col in df.columns:
-            values = df[col].fillna("unknown").astype(str).str.lower()
+
+    # Numeric feature
+    if "Age" in df.columns:
+        X["age"] = df["Age"].fillna(df["Age"].median()).astype(float) / 100.0
+
+    # Categorical features
+    categorical_cols = {
+        "Gender": "gender",
+        "Blood Type": "blood_type",
+        "Medical Condition": "medical_condition"
+    }
+
+    for src_col, out_col in categorical_cols.items():
+        if src_col in df.columns:
+            values = df[src_col].fillna("unknown").astype(str).str.lower()
             if fit:
-                encoders[col] = LabelEncoder()
-                X[col] = encoders[col].fit_transform(values)
+                encoders[out_col] = LabelEncoder()
+                X[out_col] = encoders[out_col].fit_transform(values)
             else:
-                # Handle unseen labels during inference
-                known_labels = set(encoders[col].classes_)
-                values = values.apply(lambda x: x if x in known_labels else "unknown")
-                X[col] = encoders[col].transform(values)
-    
-    # List-based features (simplified encoding - hash to categories)
-    list_cols = ["symptoms", "medical_history", "allergies"]
-    for col in list_cols:
-        if col in df.columns:
-            values = df[col].apply(parse_list_field)
-            if fit:
-                encoders[col] = LabelEncoder()
-                # Limit unique values to prevent overfitting
-                unique_vals = values.unique()
-                if len(unique_vals) > 100:
-                    # Keep top 100 most common, rest as "other"
-                    top_vals = values.value_counts().head(100).index.tolist()
-                    values = values.apply(lambda x: x if x in top_vals else "other")
-                X[col] = encoders[col].fit_transform(values)
-            else:
-                known_labels = set(encoders[col].classes_)
-                values = values.apply(lambda x: x if x in known_labels else "other" if "other" in known_labels else list(known_labels)[0])
-                X[col] = encoders[col].transform(values)
-    
+                known = set(encoders[out_col].classes_)
+                values = values.apply(lambda x: x if x in known else "unknown")
+                X[out_col] = encoders[out_col].transform(values)
+
     return X, encoders
 
 
@@ -115,12 +91,12 @@ def train_model():
     print(f"✅ Loaded {len(df)} records")
     
     # Check for target column
-    if "recommended_drug" not in df.columns:
-        print("❌ Error: 'recommended_drug' column not found in dataset")
+    if TARGET_COL not in df.columns:
+        print(f"❌ Error: '{TARGET_COL}' column not found in dataset")
         return False
     
     # Filter valid targets
-    df = df[df["recommended_drug"].notna() & (df["recommended_drug"] != "")]
+    df = df[df[TARGET_COL].notna() & (df[TARGET_COL] != "")]
     print(f"📊 Records with valid drug labels: {len(df)}")
     
     # Prepare features
@@ -130,7 +106,7 @@ def train_model():
     
     # Prepare target
     target_encoder = LabelEncoder()
-    y = target_encoder.fit_transform(df["recommended_drug"].astype(str))
+    y = target_encoder.fit_transform(df[TARGET_COL].astype(str))
     encoders["target"] = target_encoder
     print(f"   Number of drug classes: {len(target_encoder.classes_)}")
     
