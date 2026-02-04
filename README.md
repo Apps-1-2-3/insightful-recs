@@ -1,54 +1,75 @@
+# Drug Recommendation System with AI/ML
 
+An AI-powered drug recommendation system using similarity-based matching and machine learning.
 
-**Use your preferred IDE**
+## Quick Start
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. 
+### 1. Backend Setup (Python FastAPI)
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+```bash
+# Navigate to backend folder
+cd backend
 
-Follow these steps:
+# Install dependencies
+pip install -r requirements.txt
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+# (First time) Train the ML model
+python train_ml_model.py
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+# Start the API server
+python main.py
+```
 
-# Step 3: Install the necessary dependencies.
-npm i
+The API will be available at `http://localhost:8000` (docs at `/docs`).
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+### 2. Frontend Setup (React/Vite)
+
+```bash
+# In a new terminal, from project root
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+The frontend will be available at `http://localhost:5173`.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Project Structure
 
-**Use GitHub Codespaces**
+```
+├── backend/
+│   ├── main.py              # FastAPI server with recommendation engine
+│   ├── train_ml_model.py    # ML model training script
+│   ├── requirements.txt     # Python dependencies
+│   ├── data/
+│   │   └── ehr_synthetic_max_features.csv  # EHR dataset (100k records)
+│   ├── ml_model.pkl         # Trained ML model (generated)
+│   └── ml_encoders.pkl      # Feature encoders (generated)
+├── src/                     # React frontend
+└── ...
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+## AI/ML Components
 
-## What technologies are used for this project?
+### Recommendation Engine (Primary)
+- **Similarity-based matching**: Finds similar patients in EHR records
+- **SHAP-like explanations**: Shows which features influenced the recommendation
 
-This project is built with:
+### Machine Learning Model (Supplementary)
+- **Algorithm**: Logistic Regression
+- **Training**: Run `python train_ml_model.py` to train on EHR data
+- **Evaluation**: Accuracy on 80/20 validation split
+- **Role**: Provides validation signal; boosts confidence when aligned with similarity-based results
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## API Endpoints
 
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check (includes ML status) |
+| `/data/status` | GET | Dataset info |
+| `/predict` | POST | Get drug recommendations |
 
-Yes, you can!
+## Data Requirements
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+Place your EHR CSV file at `backend/data/ehr_synthetic_max_features.csv` with columns:
+- `age`, `gender`, `heart_rate`, `blood_type`
+- `symptoms`, `medical_history`, `allergies`, `current_medications`
+- `recommended_drug` (target for ML training)

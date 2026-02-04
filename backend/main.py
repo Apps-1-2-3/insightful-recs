@@ -2,15 +2,23 @@
 Drug Recommendation System - FastAPI Backend
 Uses CSV data directly with pandas. No database required.
 Provides real-time SHAP-like explanations for drug recommendations.
+
+ML COMPONENT:
+- A trained Logistic Regression model provides supplementary AI predictions
+- The ML model complements (does not replace) the similarity-based engine
+- Explainability remains similarity-driven; ML adds a validation signal
 """
 
 CSV_PATH = "data/ehr_synthetic_max_features.csv"
+ML_MODEL_PATH = "ml_model.pkl"
+ML_ENCODERS_PATH = "ml_encoders.pkl"
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import pandas as pd
+import os
 
 app = FastAPI(
     title="Drug Recommendation API",
@@ -30,9 +38,16 @@ app.add_middleware(
 # Global DataFrame to store EHR data
 ehr_data: Optional[pd.DataFrame] = None
 
+# ML Model globals (supplementary AI layer)
+ml_model = None
+ml_encoders = None
+ml_available = False
+
 @app.on_event("startup")
 def load_csv_on_startup():
-    global ehr_data
+    global ehr_data, ml_model, ml_encoders, ml_available
+    
+    # Load EHR data
     try:
         ehr_data = pd.read_csv(CSV_PATH)
         print(f"✅ Loaded EHR dataset with {len(ehr_data)} records")
@@ -40,6 +55,23 @@ def load_csv_on_startup():
     except Exception as e:
         print("❌ Failed to load EHR CSV:", e)
         raise RuntimeError("EHR dataset could not be loaded")
+    
+    # Load ML model if available (supplementary AI layer)
+    # The ML model provides an additional prediction signal but does not replace
+    # the primary similarity-based recommendation engine
+    try:
+        import joblib
+        if os.path.exists(ML_MODEL_PATH) and os.path.exists(ML_ENCODERS_PATH):
+            ml_model = joblib.load(ML_MODEL_PATH)
+            ml_encoders = joblib.load(ML_ENCODERS_PATH)
+            ml_available = True
+            print(f"✅ ML model loaded (supplementary AI layer active)")
+        else:
+            print("ℹ️  ML model not found - run 'python train_ml_model.py' to train")
+            print("   System will use similarity-based recommendations only")
+    except Exception as e:
+        print(f"⚠️  ML model could not be loaded: {e}")
+        print("   System will use similarity-based recommendations only")
 
 
 # === Pydantic Models ===
@@ -345,6 +377,82 @@ def get_drug_details(drug_name: str, confidence: float, symptoms: List[str]) -> 
     )
 
 
+def get_ml_prediction(patient: PatientInput) -> Optional[str]:
+    """
+    Get ML model prediction for the patient.
+    
+    ML ROLE: This provides a supplementary AI prediction that can be used as:
+    - A secondary suggestion to validate similarity-based recommendations
+    - An alternative when similarity-based results are weak
+    
+    The ML model supports feature-based decision learning; explainability
+    remains similarity-driven through the SHAP-like explanations.
+    
+    Returns:
+        Predicted drug name, or None if ML model is unavailable
+    """
+    global ml_model, ml_encoders, ml_available
+    
+    if not ml_available or ml_model is None or ml_encoders is None:
+        return None
+    
+    try:
+        import numpy as np
+        
+        # Prepare patient features matching training format
+        def parse_list_to_str(items: List[str]) -> str:
+            if not items or (len(items) == 1 and items[0].lower() == "none"):
+                return "none"
+            return ",".join(sorted([item.strip().lower() for item in items]))
+        
+        # Build feature dict
+        features = {
+            "age": patient.age / 100.0,  # Normalized
+            "heart_rate": patient.heart_rate / 200.0,  # Normalized
+        }
+        
+        # Encode categorical features
+        for col in ["gender", "blood_type"]:
+            value = getattr(patient, col, "unknown").lower()
+            if col in ml_encoders:
+                known_labels = set(ml_encoders[col].classes_)
+                value = value if value in known_labels else "unknown"
+                features[col] = ml_encoders[col].transform([value])[0]
+            else:
+                features[col] = 0
+        
+        # Encode list features
+        list_feature_map = {
+            "symptoms": patient.symptoms,
+            "medical_history": patient.medical_history,
+            "allergies": patient.allergies,
+        }
+        
+        for col, values in list_feature_map.items():
+            value_str = parse_list_to_str(values)
+            if col in ml_encoders:
+                known_labels = set(ml_encoders[col].classes_)
+                fallback = "other" if "other" in known_labels else list(known_labels)[0]
+                value_str = value_str if value_str in known_labels else fallback
+                features[col] = ml_encoders[col].transform([value_str])[0]
+            else:
+                features[col] = 0
+        
+        # Create feature array in correct order
+        feature_order = ["age", "heart_rate", "gender", "blood_type", "symptoms", "medical_history", "allergies"]
+        X = np.array([[features.get(f, 0) for f in feature_order]])
+        
+        # Predict
+        prediction_idx = ml_model.predict(X)[0]
+        predicted_drug = ml_encoders["target"].inverse_transform([prediction_idx])[0]
+        
+        return predicted_drug
+    
+    except Exception as e:
+        print(f"⚠️  ML prediction failed: {e}")
+        return None
+
+
 # === API Endpoints ===
 
 @app.get("/")
@@ -354,7 +462,11 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "data_loaded": ehr_data is not None}
+    return {
+        "status": "healthy",
+        "data_loaded": ehr_data is not None,
+        "ml_available": ml_available
+    }
 
 
 @app.get("/data/status", response_model=DataStatus)
@@ -372,9 +484,19 @@ async def get_data_status():
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_drugs(patient: PatientInput):
-    """Get drug recommendations with SHAP explanations."""
+    """
+    Get drug recommendations with SHAP explanations.
+    
+    RECOMMENDATION ENGINE:
+    1. Primary: Similarity-based matching against EHR records
+    2. Supplementary: ML model prediction (if available) used as validation signal
+    
+    The ML prediction is integrated as a secondary suggestion that can boost
+    confidence when it aligns with similarity-based recommendations.
+    """
     global ehr_data
     
+    # === PRIMARY ENGINE: Similarity-based recommendations ===
     # Calculate similarity for all records
     similarities = []
     for idx, record in ehr_data.iterrows():
@@ -399,7 +521,12 @@ async def predict_drugs(patient: PatientInput):
                 drug_counts[drug]["count"] += 1
                 drug_counts[drug]["total_sim"] += sim
     
-    # If no drugs found, use common defaults based on symptoms
+    # === SUPPLEMENTARY AI LAYER: ML Model Prediction ===
+    # The ML model provides an additional prediction signal
+    # If it aligns with similarity-based results, it boosts confidence
+    ml_predicted_drug = get_ml_prediction(patient)
+    
+    # If no drugs found from similarity, use symptom-based defaults
     if not drug_counts:
         symptom_drug_map = {
             "headache": "Aspirin",
@@ -426,6 +553,10 @@ async def predict_drugs(patient: PatientInput):
                 if key in condition_lower:
                     if drug not in drug_counts:
                         drug_counts[drug] = {"count": 1, "total_sim": 0.6}
+        
+        # If ML model predicted a drug and we have no other results, add it
+        if ml_predicted_drug and ml_predicted_drug not in drug_counts:
+            drug_counts[ml_predicted_drug] = {"count": 1, "total_sim": 0.4, "ml_suggested": True}
     
     # Calculate confidence and create recommendations
     recommendations = []
@@ -433,11 +564,30 @@ async def predict_drugs(patient: PatientInput):
     
     for drug, stats in sorted(drug_counts.items(), key=lambda x: x[1]["total_sim"], reverse=True)[:5]:
         confidence = min(95, (stats["count"] / total_top * 100) + (stats["total_sim"] / stats["count"] * 50))
+        
+        # ML INTEGRATION: Boost confidence if ML model agrees with similarity-based recommendation
+        # This provides a validation signal from the trained model
+        if ml_predicted_drug and drug.lower() == ml_predicted_drug.lower():
+            confidence = min(98, confidence + 5)  # Small boost for ML agreement
+        
         rec = get_drug_details(drug, confidence, patient.symptoms)
         recommendations.append(rec)
     
-    # Get SHAP explanations
+    # Get SHAP explanations (similarity-driven explainability)
+    # Note: The ML model supports feature-based decision learning;
+    # explainability remains similarity-driven through these SHAP-like explanations
     explanations = calculate_shap_explanations(patient, top_records)
+    
+    # Add ML model note to explanations if available
+    if ml_predicted_drug and ml_available:
+        # Find if ML prediction matches top recommendation
+        top_rec = recommendations[0].name if recommendations else None
+        if top_rec and ml_predicted_drug.lower() == top_rec.lower():
+            explanations.insert(0, ShapFeature(
+                feature="ML Model Agreement",
+                influence=0.05,
+                direction="positive"
+            ))
     
     # Check for drug interactions
     all_interactions = []
